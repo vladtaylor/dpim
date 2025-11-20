@@ -1,7 +1,6 @@
 services:
   speed-probe:
     # Use 'build: .' to tell Docker Compose to build the image from the local Dockerfile
-    # This is necessary since we haven't pushed the image to a registry yet.
     build: .
     
     # Give the container a friendly, unique name
@@ -10,25 +9,22 @@ services:
     # Restart the container automatically if it stops (unless explicitly stopped by user)
     restart: unless-stopped
     
-    # Set the entrypoint to the log file so you can easily see the cron output
-    # The cron job itself is started by the entrypoint.sh script.
+    # Note: Docker Compose will automatically look for a file named .env
+    # in the same directory and load these variables into the container environment.
 
     environment:
       # --- INFLUXDB V1.x AUTHENTICATION (Database Name, User, Pass) ---
-      # **REQUIRED:** Replace these placeholders with your actual values
-      - INFLUX_HOST=http://192.168.0.161:8086
-      - INFLUX_BUCKET=<YOUR_DATABASE_NAME>
-      - INFLUX_USER=<YOUR_USERNAME>
-      - INFLUX_PASS=<YOUR_PASSWORD>
+      - INFLUX_HOST=${INFLUX_HOST}
+      - INFLUX_BUCKET=${INFLUX_BUCKET}
+      - INFLUX_USER=${INFLUX_USER}
+      - INFLUX_PASS=${INFLUX_PASS}
 
       # --- DEVICE IDENTIFIER ---
-      # **REQUIRED:** Use a unique tag for this specific device (e.g., 'pi-kitchen', 'main-server')
-      - HOST_TAG=<UNIQUE_DEVICE_NAME>
+      - HOST_TAG=${HOST_TAG}
 
       # --- DEBUG/TEST CONFIG ---
-      # Set to 'true' to skip the iperf test and push static data (500.5 Mbps) for testing DB connection.
-      - DEBUG_MODE=false
+      - DEBUG_MODE=${DEBUG_MODE}
       
       # --- IPERF CONFIG (Optional - Defaults are 10s duration, 4 parallel streams) ---
-      # - TEST_DURATION=15
-      # - PARALLEL_STREAMS=8
+      - TEST_DURATION=${TEST_DURATION}
+      - PARALLEL_STREAMS=${PARALLEL_STREAMS}
