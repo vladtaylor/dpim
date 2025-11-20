@@ -19,24 +19,53 @@ IDNET_SERVER="speedtest.idnet.net"
 TEST_DURATION=10
 PARALLEL_STREAMS=4
 
+# Retry configuration for the iperf3 test
+MAX_TEST_RETRIES=3
+TEST_RETRY_DELAY=10
+TEST_PASSED=0
+
 # 1. Determine the speed value to use
 if [ "$DEBUG_MODE" = "true" ]; then
     # --- DEBUG MODE: Use fake data ---
     # Assign a static value for testing InfluxDB write integrity.
     DOWNLOAD_RATE_MBPS="500.5"
     echo "$(date): DEBUG MODE ACTIVE. Using fake speed: ${DOWNLOAD_RATE_MBPS} Mbps" >> /var/log/iperf_monitor.log
+    TEST_PASSED=1 # Mark as passed in debug mode
 else
-    # --- LIVE MODE: Run iperf3 test ---
-    IPERF_OUTPUT=$(iperf3 -c "$IDNET_SERVER" -R -P "$PARALLEL_STREAMS" -t "$TEST_DURATION" -J)
+    # --- LIVE MODE: Run iperf3 test with RETRIES ---
+    
+    for attempt in $(seq 1 $MAX_TEST_RETRIES); do
+        echo "$(date): Starting iperf3 test against ${IDNET_SERVER} (Attempt $attempt/$MAX_TEST_RETRIES)..." >> /var/log/iperf_monitor.log
+        
+        # Run iperf3, capturing output/errors to allow JSON parsing or detailed failure logging
+        IPERF_OUTPUT=$(iperf3 -c "$IDNET_SERVER" -R -P "$PARALLEL_STREAMS" -t "$TEST_DURATION" -J 2>&1)
+        EXIT_CODE=$?
 
-    # Check for iperf3 error
-    if [ $? -ne 0 ]; then
-        echo "$(date): iperf3 download test failed with exit code $?. Skipping data write." >> /var/log/iperf_monitor.log
-        exit 1
+        if [ $EXIT_CODE -eq 0 ]; then
+            # Attempt to extract BPS and validate it is a positive integer
+            DOWNLOAD_RATE_BPS=$(echo "$IPERF_OUTPUT" | jq -r '.end.sum_received.bits_per_second' 2>/dev/null)
+            
+            # Check if the extracted BPS is valid and greater than zero
+            if [[ "$DOWNLOAD_RATE_BPS" =~ ^[0-9]+$ ]] && [ "$DOWNLOAD_RATE_BPS" -gt 0 ]; then
+                TEST_PASSED=1
+                echo "$(date): Test successful on attempt $attempt." >> /var/log/iperf_monitor.log
+                break # Exit retry loop on success
+            fi
+        fi
+
+        echo "$(date): Test failed or reported zero speed. Raw exit code: $EXIT_CODE." >> /var/log/iperf_monitor.log
+        
+        if [ $attempt -lt $MAX_TEST_RETRIES ]; then
+            echo "$(date): Waiting $TEST_RETRY_DELAY seconds before retrying..." >> /var/log/iperf_monitor.log
+            sleep $TEST_RETRY_DELAY
+        fi
+    done
+
+    # Final check after the loop to ensure a good value was found
+    if [ "$TEST_PASSED" -eq 0 ]; then
+        echo "$(date): FINAL FAILURE: iperf3 failed after all retries. Aborting script to avoid writing bad data." >> /var/log/iperf_monitor.log
+        exit 1 # Exit the script
     fi
-
-    # 2. Extract key metrics using 'jq'
-    DOWNLOAD_RATE_BPS=$(echo "$IPERF_OUTPUT" | jq -r '.end.sum_received.bits_per_second')
     
     # Use 'bc' for floating point math: convert BPS to MBPS, maintaining 2 decimal places.
     DOWNLOAD_RATE_MBPS=$(echo "scale=2; $DOWNLOAD_RATE_BPS / 1000000" | bc)
