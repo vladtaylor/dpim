@@ -27,7 +27,6 @@ TEST_PASSED=0
 # 1. Determine the speed value to use
 if [ "$DEBUG_MODE" = "true" ]; then
     # --- DEBUG MODE: Use fake data ---
-    # Assign a static value for testing InfluxDB write integrity.
     DOWNLOAD_RATE_MBPS="500.5"
     echo "$(date): DEBUG MODE ACTIVE. Using fake speed: ${DOWNLOAD_RATE_MBPS} Mbps" >> /var/log/iperf_monitor.log
     TEST_PASSED=1 # Mark as passed in debug mode
@@ -42,24 +41,26 @@ else
         EXIT_CODE=$?
 
         if [ $EXIT_CODE -eq 0 ]; then
-            # Attempt to extract BPS
-            # We use sed to extract the last 'end' block of JSON before jq attempts the parsing, 
-            # reducing the chance of preamble data breaking the parser.
-            # We also ensure the extracted value is a float, as bc will handle the math later.
-            DOWNLOAD_RATE_BPS=$(echo "$IPERF_OUTPUT" | sed -n 's/^.*"sum_received":\({[^}]*}\).*$/\1/p' | jq -r '.bits_per_second' 2>/dev/null)
+            # --- CRITICAL FIX: Clean the JSON input before passing to jq ---
+            # 1. Remove all newlines/carriage returns (tr -d '\n\r')
+            # 2. Remove non-printable characters (tr -cd '[:print:]')
+            # 3. Pipe to jq using the direct path.
+            CLEAN_JSON=$(echo "$IPERF_OUTPUT" | tr -d '\n\r' | tr -cd '[:print:]')
+            
+            # Attempt to extract BPS using the direct path
+            DOWNLOAD_RATE_BPS=$(echo "$CLEAN_JSON" | jq -r '.end.sum_received.bits_per_second' 2>/dev/null)
             
             # --- BEGIN ROBUST VALIDATION ---
             
-            # 1. Check if the extracted value is non-empty.
-            if [ -z "$DOWNLOAD_RATE_BPS" ]; then
-                echo "$(date): Test failed: jq returned empty value." >> /var/log/iperf_monitor.log
-                echo "   Raw iperf Output (for debug): ${IPERF_OUTPUT}" >> /var/log/iperf_monitor.log
-            
-            # 2. Check if the value is greater than zero (using 'bc' for float comparison)
-            elif echo "$DOWNLOAD_RATE_BPS > 0" | bc -l | grep -q 1; then
-                TEST_PASSED=1
-                echo "$(date): Test successful on attempt $attempt. BPS extracted: $DOWNLOAD_RATE_BPS" >> /var/log/iperf_monitor.log
-                break # Exit retry loop on success
+            # Check if the extracted value is non-empty and starts with a digit (simple validation)
+            if [ -n "$DOWNLOAD_RATE_BPS" ] && [[ "$DOWNLOAD_RATE_BPS" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+                
+                # Check if the value is greater than zero (using 'bc' for float comparison)
+                if echo "$DOWNLOAD_RATE_BPS > 0" | bc -l | grep -q 1; then
+                    TEST_PASSED=1
+                    echo "$(date): Test successful on attempt $attempt. BPS extracted: $DOWNLOAD_RATE_BPS" >> /var/log/iperf_monitor.log
+                    break # Exit retry loop on success
+                fi
             fi
             # --- END ROBUST VALIDATION ---
         fi
@@ -75,8 +76,6 @@ else
     # Final check after the loop to ensure a good value was found
     if [ "$TEST_PASSED" -eq 0 ]; then
         echo "$(date): FINAL FAILURE: iperf3 failed after all retries. Aborting script to avoid writing bad data." >> /var/log/iperf_monitor.log
-        # Add a final log of the failure output to assist with analysis 
-        echo "   Final Raw iperf Output (for analysis): ${IPERF_OUTPUT}" >> /var/log/iperf_monitor.log
         exit 1 # Exit the script
     fi
     
