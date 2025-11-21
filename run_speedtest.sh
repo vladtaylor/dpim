@@ -37,15 +37,17 @@ else
     for attempt in $(seq 1 $MAX_TEST_RETRIES); do
         echo "$(date): Starting iperf3 test against ${IDNET_SERVER} (Attempt $attempt/$MAX_TEST_RETRIES)..." >> /var/log/iperf_monitor.log
         
-        # Run iperf3, capturing output/errors to allow JSON parsing or detailed failure logging
-        IPERF_OUTPUT=$(iperf3 -c "$IDNET_SERVER" -R -P "$PARALLEL_STREAMS" -t "$TEST_DURATION" -J 2>&1)
+        # FIX: Redirect STDERR (errors/warnings) to /dev/null to keep IPERF_OUTPUT clean JSON.
+        IPERF_OUTPUT=$(iperf3 -c "$IDNET_SERVER" -R -P "$PARALLEL_STREAMS" -t "$TEST_DURATION" -J 2>/dev/null)
         EXIT_CODE=$?
 
         if [ $EXIT_CODE -eq 0 ]; then
-            # Attempt to extract BPS and validate it is a positive integer
-            DOWNLOAD_RATE_BPS=$(echo "$IPERF_OUTPUT" | jq -r '.end.sum_received.bits_per_second' 2>/dev/null)
+            # Attempt to extract BPS
+            # jq is run without 2>/dev/null here to get a clean result, relying on clean input
+            DOWNLOAD_RATE_BPS=$(echo "$IPERF_OUTPUT" | jq -r '.end.sum_received.bits_per_second')
             
             # Check if the extracted BPS is valid and greater than zero
+            # We check if BPS is a valid number string and greater than 0
             if [[ "$DOWNLOAD_RATE_BPS" =~ ^[0-9]+$ ]] && [ "$DOWNLOAD_RATE_BPS" -gt 0 ]; then
                 TEST_PASSED=1
                 echo "$(date): Test successful on attempt $attempt." >> /var/log/iperf_monitor.log
@@ -54,6 +56,7 @@ else
         fi
 
         echo "$(date): Test failed or reported zero speed. Raw exit code: $EXIT_CODE." >> /var/log/iperf_monitor.log
+        echo "   Raw iperf Output (for debug): ${IPERF_OUTPUT}" >> /var/log/iperf_monitor.log # Log raw output for analysis
         
         if [ $attempt -lt $MAX_TEST_RETRIES ]; then
             echo "$(date): Waiting $TEST_RETRY_DELAY seconds before retrying..." >> /var/log/iperf_monitor.log
