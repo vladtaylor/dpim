@@ -43,20 +43,28 @@ else
 
         if [ $EXIT_CODE -eq 0 ]; then
             # Attempt to extract BPS
-            # jq is run without 2>/dev/null here to get a clean result, relying on clean input
-            DOWNLOAD_RATE_BPS=$(echo "$IPERF_OUTPUT" | jq -r '.end.sum_received.bits_per_second')
+            # We use sed to extract the last 'end' block of JSON before jq attempts the parsing, 
+            # reducing the chance of preamble data breaking the parser.
+            # We also ensure the extracted value is a float, as bc will handle the math later.
+            DOWNLOAD_RATE_BPS=$(echo "$IPERF_OUTPUT" | sed -n 's/^.*"sum_received":\({[^}]*}\).*$/\1/p' | jq -r '.bits_per_second' 2>/dev/null)
             
-            # Check if the extracted BPS is valid and greater than zero
-            # We check if BPS is a valid number string and greater than 0
-            if [[ "$DOWNLOAD_RATE_BPS" =~ ^[0-9]+$ ]] && [ "$DOWNLOAD_RATE_BPS" -gt 0 ]; then
+            # --- BEGIN ROBUST VALIDATION ---
+            
+            # 1. Check if the extracted value is non-empty.
+            if [ -z "$DOWNLOAD_RATE_BPS" ]; then
+                echo "$(date): Test failed: jq returned empty value." >> /var/log/iperf_monitor.log
+                echo "   Raw iperf Output (for debug): ${IPERF_OUTPUT}" >> /var/log/iperf_monitor.log
+            
+            # 2. Check if the value is greater than zero (using 'bc' for float comparison)
+            elif echo "$DOWNLOAD_RATE_BPS > 0" | bc -l | grep -q 1; then
                 TEST_PASSED=1
-                echo "$(date): Test successful on attempt $attempt." >> /var/log/iperf_monitor.log
+                echo "$(date): Test successful on attempt $attempt. BPS extracted: $DOWNLOAD_RATE_BPS" >> /var/log/iperf_monitor.log
                 break # Exit retry loop on success
             fi
+            # --- END ROBUST VALIDATION ---
         fi
 
         echo "$(date): Test failed or reported zero speed. Raw exit code: $EXIT_CODE." >> /var/log/iperf_monitor.log
-        echo "   Raw iperf Output (for debug): ${IPERF_OUTPUT}" >> /var/log/iperf_monitor.log # Log raw output for analysis
         
         if [ $attempt -lt $MAX_TEST_RETRIES ]; then
             echo "$(date): Waiting $TEST_RETRY_DELAY seconds before retrying..." >> /var/log/iperf_monitor.log
@@ -67,6 +75,8 @@ else
     # Final check after the loop to ensure a good value was found
     if [ "$TEST_PASSED" -eq 0 ]; then
         echo "$(date): FINAL FAILURE: iperf3 failed after all retries. Aborting script to avoid writing bad data." >> /var/log/iperf_monitor.log
+        # Add a final log of the failure output to assist with analysis 
+        echo "   Final Raw iperf Output (for analysis): ${IPERF_OUTPUT}" >> /var/log/iperf_monitor.log
         exit 1 # Exit the script
     fi
     
